@@ -1,0 +1,21 @@
+{
+  "url": "https://api.makeleaps.com/api/partner/example-company/client/example-client/",
+  "mid": "example-client",
+  "display_name": "Example Customer",
+  "organization_type": "example-organization_type",
+  "is_organization": false,
+  "date_archived": null,
+  "client_external_id": "example-client_external_id",
+  "contacts": [
+    "https://api.makeleaps.com/api/partner/example-company/contact/example-contact/"
+  ],
+  "default_contact": "https://api.makeleaps.com/api/partner/example-company/contact/example-contact/",
+  "managing_teams": [],
+  "default_presets": [],
+  "integrations": {},
+  "lang_code": "example-lang_code",
+  "settings": "https://api.makeleaps.com/api/partner/example-company/settings/",
+  "date_cutoff": 15,
+  "tax_registration_number": "example-tax_registration_number",
+  "virtual_bank_accounts": []
+}

@@ -1,0 +1,25 @@
+{
+  "url": "https://api.makeleaps.com/api/partner/example-company/contact/example-contact/",
+  "mid": "example-contact",
+  "owner": "https://api.makeleaps.com/api/partner/example-company/client/example-client/",
+  "owner_type": "client",
+  "contact_type": "person",
+  "name": "example-name",
+  "family_name": "example-family_name",
+  "given_name": "example-given_name",
+  "display_name": "example-display_name",
+  "title": "example-title",
+  "department": "example-department",
+  "format": "example-format",
+  "phone_number": "example-phone_number",
+  "fax_number": "example-fax_number",
+  "is_default": true,
+  "email": {
+    "address": "person@example.invalid"
+  },
+  "addresses": [],
+  "default_address": {
+    "formatted_html": "<p>Example address</p>"
+  },
+  "integrations": {}
+}

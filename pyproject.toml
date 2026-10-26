@@ -1,0 +1,52 @@
+[project]
+name = "makeleaps-client"
+dynamic = ["version"]
+description = "Unofficial Python client library and CLI for the MakeLeaps REST API (not affiliated with MakeLeaps, Inc.)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "minamik", email = "10973755+minamikik@users.noreply.github.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.14.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.urls]
+Repository = "https://github.com/minamikik/makeleaps-client"
+
+[project.scripts]
+makeleaps = "makeleaps_client.cli:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+tag_regex = "^v(?P<version>[^/]+)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v*"]
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/makeleaps_client/_version.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.nf/", "/.github/", "/noren.yaml", "/noren-words.txt"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/makeleaps_client"]
+
+[tool.pytest.ini_options]
+addopts = ["--strict-markers"]
+markers = [
+    "req(id): the adopted spec item ID that the test verifies",
+]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

@@ -1,0 +1,14 @@
+{
+  "url": "https://api.makeleaps.com/api/partner/example-company/",
+  "name": "Example Company",
+  "clients": "https://api.makeleaps.com/api/partner/example-company/client/",
+  "contacts": "https://api.makeleaps.com/api/partner/example-company/contact/",
+  "documents": "https://api.makeleaps.com/api/partner/example-company/document/",
+  "line_item_catalog": "example-line_item_catalog",
+  "tags": "example-tags",
+  "sending_orders": "example-sending_orders",
+  "history": "example-history",
+  "integrations": {},
+  "account_name": "example-account_name",
+  "tax_registration_number": "example-tax_registration_number"
+}

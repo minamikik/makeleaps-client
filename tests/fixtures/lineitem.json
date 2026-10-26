@@ -1,0 +1,16 @@
+{
+  "kind": "example-kind",
+  "description": "example-description",
+  "unit_cost": "123.40",
+  "quantity": "123.40",
+  "quantity_unit": "example-quantity_unit",
+  "price": "123.40",
+  "is_taxable": false,
+  "is_tax_inclusive": false,
+  "has_jp_withholding_tax": false,
+  "tax_rate": "123.40",
+  "tax_type": "example-tax_type",
+  "extended_data": {},
+  "vendor_cost": "123.40",
+  "source_catalog_item": "https://api.makeleaps.com/api/partner/example-company/source_catalog_item/"
+}

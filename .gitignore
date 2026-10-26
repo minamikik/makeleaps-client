@@ -1,0 +1,9 @@
+.nf/tmp/
+.nf/logs/
+.nf/research/
+dist/
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+src/makeleaps_client/_version.py

@@ -1,0 +1,24 @@
+{
+  "mid": "example-archive",
+  "url": "https://api.makeleaps.com/api/partner/example-company/archive/example-archive/",
+  "pdf_content_url": "https://api.makeleaps.com/api/partner/example-company/archive/example-archive/pdf/",
+  "uses_external_pdf": false,
+  "document_type": "invoice",
+  "document_number": "EXAMPLE-1",
+  "sending_methods": [
+    "secure_send"
+  ],
+  "legal_categories": [
+    "electronically_from_makeleaps"
+  ],
+  "date_sent": "2025-04-12T01:02:03Z",
+  "date": "2025-04-12",
+  "sender": "example-sender",
+  "client": "Example Customer",
+  "currency": "JPY",
+  "total": "123.40",
+  "external_id": "example-external_id",
+  "delivery_methods": [
+    "example-method"
+  ]
+}
