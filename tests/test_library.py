@@ -241,19 +241,21 @@ def test_retry_after_is_waited_and_retries_are_finite(backend, monkeypatch, keep
 @pytest.mark.req('SP-MLC-007')
 @pytest.mark.req('SP-MLC-027')
 def test_all_pages_are_concurrent_ordered_and_expanded_once_per_operation(backend):
-    """書類を順に全件返し、取引先と担当者の一覧を操作ごとに一度だけ取る。"""
-    backend.document_count = 1005
+    """大量の書類を順に返し、取引先と担当者の一覧は一度だけ取る。"""
+    backend.document_count = 6503
     async def scenario():
         async with client(backend) as api:
             docs = [d async for d in api.list_documents()]
-            assert [d.mid for d in docs] == [f'example-document-{i}' for i in range(1005)]
+            assert [d.mid for d in docs] == [f'example-document-{i}' for i in range(6503)]
             assert all(d.client.mid == 'example-client' for d in docs)
+            assert len(backend.requests) == 72
             await api.get_document('one')
     run(scenario())
     assert backend.max_active_pages > 1
     paths = [r.url.path for r in backend.requests]
-    assert paths.count('/api/partner/example-company/client/') == 2
-    assert paths.count('/api/partner/example-company/contact/') == 2
+    assert paths.count('/api/partner/example-company/client/') == 1
+    assert paths.count('/api/partner/example-company/contact/') == 1
+    assert len(backend.requests) == 75
     assert all('expand' not in r.url.params for r in backend.requests)
 
 
@@ -331,14 +333,63 @@ def test_missing_pdf_is_a_failure(backend, name):
 
 @pytest.mark.req('SP-MLC-007')
 @pytest.mark.req('SP-MLC-027')
-def test_first_document_page_and_related_lists_overlap(backend):
-    """最初の書類のページと取引先と担当者の一覧を同時に取る。"""
+def test_first_document_precedes_related_lists_and_references_overlap(backend):
+    """最初の書類は全件の取引先を待たず、参照先を同時に取って返す。"""
+    first_delivered = False
+    active = 0
+    max_active = 0
+    async def override(request):
+        nonlocal active, max_active
+        if request.url.path.endswith(('/client/', '/contact/')):
+            assert first_delivered, 'The first document must precede the related lists'
+        if request.url.path.endswith(('/client/example-client/', '/contact/example-contact/')):
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+    backend.override = override
     async def scenario():
-        backend.page_gate = asyncio.Event()
+        nonlocal first_delivered
         async with client(backend) as api:
-            async def collect():
-                return [d async for d in api.list_documents()]
-            docs = await asyncio.wait_for(collect(), timeout=1)
-            assert len(docs) == 3
+            docs = api.list_documents()
+            first = await anext(docs)
+            first_delivered = True
+            assert first.client.model_dump() == resource('client')
+            assert first.client_contact.model_dump() == resource('contact')
+            assert len([d async for d in docs]) == 2
     run(scenario())
-    assert backend.max_active_pages >= 3
+    assert max_active == 2
+
+
+@pytest.mark.req('SP-MLC-027')
+def test_get_document_fetches_only_referenced_client_and_contact(backend):
+    """書類の詳細は参照先だけを取得し、取引先と担当者の全 field を返す。"""
+    async def scenario():
+        async with client(backend) as api:
+            doc = await api.get_document('one')
+            assert doc.client.model_dump() == resource('client')
+            assert doc.client_contact.model_dump() == resource('contact')
+    run(scenario())
+    assert [r.url.path for r in backend.requests] == [
+        '/user/oauth2/token/', '/api/',
+        '/api/partner/example-company/document/one/',
+        '/api/partner/example-company/client/example-client/',
+        '/api/partner/example-company/contact/example-contact/',
+    ]
+
+
+@pytest.mark.req('SP-MLC-027')
+@pytest.mark.parametrize('references', [
+    {}, {'client': None, 'client_contact': None},
+    {'client': resource('client'), 'client_contact': resource('contact')},
+])
+def test_get_document_does_not_fetch_absent_or_expanded_references(backend, references):
+    """参照先が未指定か展開済みなら、取引先と担当者の取得を省く。"""
+    raw = {k: v for k, v in resource('document').items() if k not in ('client', 'client_contact')}
+    raw.update(references)
+    backend.override = lambda r: envelope(raw) if r.url.path.endswith('/document/one/') else None
+    async def scenario():
+        async with client(backend) as api:
+            assert (await api.get_document('one')).model_dump() == raw
+    run(scenario())
+    assert len(backend.requests) == 3

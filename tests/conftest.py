@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import inspect
 from pathlib import Path
 
 import httpx
@@ -29,12 +30,13 @@ class Backend:
         self.override = None
         self.active_pages = 0
         self.max_active_pages = 0
-        self.page_gate = None
 
     async def __call__(self, request):
         self.requests.append(request)
         if self.override:
             reply = self.override(request)
+            if inspect.isawaitable(reply):
+                reply = await reply
             if reply is not None:
                 return reply
         path = request.url.path
@@ -51,19 +53,16 @@ class Backend:
         name, *tail = path.removeprefix('/api/partner/example-company/').strip('/').split('/')
         if tail:
             value = resource(name)
-            value.update(mid=tail[0], url=f'{BASE}{name}/{tail[0]}/', pdf_content_url=f'{BASE}{name}/{tail[0]}/pdf/')
+            value.update(mid=tail[0], url=f'{BASE}{name}/{tail[0]}/')
+            if name in ('document', 'archive'):
+                value['pdf_content_url'] = f'{BASE}{name}/{tail[0]}/pdf/'
             return envelope(value)
         count = self.document_count if name == 'document' else self.archive_count if name == 'archive' else 1
         page = int(request.url.params.get('page', '1'))
         size = min(int(request.url.params.get('page_size', '20')), 100)
         self.active_pages += 1
         self.max_active_pages = max(self.max_active_pages, self.active_pages)
-        if self.page_gate is not None:
-            if self.active_pages >= 3:
-                self.page_gate.set()
-            await self.page_gate.wait()
-        else:
-            await asyncio.sleep(0)
+        await asyncio.sleep(0)
         self.active_pages -= 1
         values = []
         for i in range((page - 1) * size, min(page * size, count)):

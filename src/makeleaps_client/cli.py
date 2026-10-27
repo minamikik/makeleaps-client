@@ -14,6 +14,14 @@ import yaml
 
 from .client import MakeLeapsClient, MakeLeapsError
 
+_PDF_CONCURRENCY = 8
+
+
+def _write_yaml(value):
+    yaml.dump(value, sys.stdout, Dumper=getattr(yaml, 'CSafeDumper', yaml.SafeDumper),
+              allow_unicode=True, sort_keys=False, default_flow_style=False)
+    sys.stdout.flush()
+
 
 def _nonnegative(value: str) -> int:
     try:
@@ -115,7 +123,17 @@ async def _execute(args, client_id, client_secret):
         if args.operation == 'get':
             return (await api.get_document(args.mid)).model_dump()
         if args.operation == 'list':
-            return [record.model_dump() async for record in _records(api, args)]
+            empty = True
+            records = _records(api, args)
+            try:
+                async for record in records:
+                    _write_yaml([record.model_dump()])
+                    empty = False
+            finally:
+                await records.aclose()
+            if empty:
+                _write_yaml([])
+            return None
         fetch = api.get_document_pdf if args.resource == 'documents' else api.get_archive_pdf
         if args.mid:
             args.output.write_bytes(await fetch(args.mid))
@@ -123,6 +141,14 @@ async def _execute(args, client_id, client_secret):
         directory = args.dir
         directory.mkdir(parents=True, exist_ok=True)
         existing = {path.name for path in directory.iterdir() if path.is_file()}
+        async def save(record, filename):
+            if record.pdf_content_url:
+                content = (await api._request(record.pdf_content_url)).content
+            else:
+                content = await fetch(record.mid)
+            (directory / filename).write_bytes(content)
+
+        pending = set()
         records = _records(api, args)
         try:
             async for record in records:
@@ -130,9 +156,18 @@ async def _execute(args, client_id, client_secret):
                 suffix = '_' + _safe_component(record.mid) + '.pdf'
                 if any(name.endswith(suffix) for name in existing):
                     continue
-                (directory / filename).write_bytes(await fetch(record.mid))
+                pending.add(asyncio.create_task(save(record, filename)))
+                # Reserve the mid before another row can schedule the same PDF.
                 existing.add(filename)
+                if len(pending) >= _PDF_CONCURRENCY:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.gather(*done)
+            await asyncio.gather(*pending)
         finally:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
             await records.aclose()
         return None
 
@@ -158,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(_execute(args, client_id, client_secret))
         if result is not None:
-            print(yaml.safe_dump(result, allow_unicode=True, sort_keys=False), end='')
+            _write_yaml(result)
         return 0
     except MakeLeapsError as exc:
         print(str(exc), file=sys.stderr)

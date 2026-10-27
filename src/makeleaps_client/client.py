@@ -299,10 +299,21 @@ class MakeLeapsClient:
                 value[field] = records[reference]
         return self._model(Document, value)
 
+    async def _expand_references(self, value: dict[str, Any]) -> Document:
+        async def collect(field):
+            reference = value.get(field)
+            if not isinstance(reference, str):
+                return {}
+            resource = (await self._data(reference))['response']
+            if not isinstance(resource, dict):
+                raise MakeLeapsError('The MakeLeaps API returned an invalid client or contact.')
+            return {reference: resource}
+        related = await _together(collect('client'), collect('client_contact'))
+        return self._expand(value, related)
+
     async def get_document(self, mid: str) -> Document:
         """Return a document with its complete client and contact resources."""
-        value, related = await _together(self._resource('document', mid), self._related())
-        return self._expand(value, related)
+        return await self._expand_references(await self._resource('document', mid))
 
     async def list_documents(self, *, document_type: str | None = None,
                              date_from: date | str | None = None,
@@ -318,13 +329,20 @@ class MakeLeapsClient:
             if value is not None:
                 params = params.set(key, value.isoformat() if isinstance(value, date) else value)
         pages = self._pages((await self._company()) + 'document/', params)
+        first = True
+        related = None
         try:
-            first, related = await _together(anext(pages), self._related())
-            for value in first:
-                yield self._expand(value, related)
             async for page in pages:
                 for value in page:
-                    yield self._expand(value, related)
+                    if first:
+                        # Return promptly even when the company's related lists are large.
+                        yield await self._expand_references(value)
+                        first = False
+                    else:
+                        # Bulk expansion avoids two requests per document in large exports.
+                        if related is None:
+                            related = await self._related()
+                        yield self._expand(value, related)
         finally:
             await pages.aclose()
 
