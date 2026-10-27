@@ -23,6 +23,20 @@ def _write_yaml(value):
     sys.stdout.flush()
 
 
+def _read_yaml(filename: str) -> dict[str, Any]:
+    try:
+        if filename == '-':
+            value = yaml.safe_load(sys.stdin)
+        else:
+            with Path(filename).open(encoding='utf-8') as stream:
+                value = yaml.safe_load(stream)
+    except (yaml.YAMLError, UnicodeError):
+        raise MakeLeapsError('Unable to read the input as valid YAML.') from None
+    if not isinstance(value, dict):
+        raise MakeLeapsError('The input YAML must contain a mapping at the top level.')
+    return value
+
+
 def _nonnegative(value: str) -> int:
     try:
         number = int(value)
@@ -57,13 +71,13 @@ def _list_options(parser, *, documents=False):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='makeleaps', description='Read MakeLeaps company data, documents, archives, and PDFs.')
+    parser = argparse.ArgumentParser(prog='makeleaps', description='Read MakeLeaps data and create, edit, or delete documents.')
     parser.add_argument('--language', default='ja', help='Response language (default: ja)')
     commands = parser.add_subparsers(dest='resource', required=True)
     partner = commands.add_parser('partner', help='Get the company associated with the API key')
     partner.add_argument('--language', default=argparse.SUPPRESS)
     for name in ('documents', 'archives'):
-        group = commands.add_parser(name, help='Read documents' if name == 'documents' else 'Read records saved at the time of sending')
+        group = commands.add_parser(name, help='Read, create, edit, or delete documents' if name == 'documents' else 'Read records saved at the time of sending')
         group.add_argument('--language', default=argparse.SUPPRESS)
         actions = group.add_subparsers(dest='operation', required=True)
         listing = actions.add_parser('list', help='List all matching records')
@@ -73,6 +87,40 @@ def _parser() -> argparse.ArgumentParser:
             get = actions.add_parser('get', help='Get a document with its client and contact')
             get.add_argument('mid')
             get.add_argument('--language', default=argparse.SUPPRESS)
+            for operation in ('create', 'update'):
+                write = actions.add_parser(operation, help=f'{operation.capitalize()} a document from YAML')
+                if operation == 'create':
+                    write.formatter_class = argparse.RawDescriptionHelpFormatter
+                    write.epilog = (
+                        'Create a new document by exporting an existing document and editing the YAML:\n\n'
+                        '  makeleaps documents get example-document-mid > document.yaml\n'
+                        '  # Change document_number, dates, and lineitems before creating.\n'
+                        '  makeleaps documents create --file document.yaml\n\n'
+                        'Always change the document number (document_number), dates, and line items\n'
+                        '(lineitems) before creating. Otherwise, the new document may have the same\n'
+                        'number or content as the original.\n\n'
+                        'For creation and updates with line items, makeleaps-client sets\n'
+                        'autocalculate to true. MakeLeaps calculates normal and subtotal line item\n'
+                        'amounts, subtotals, taxes, and totals from unit costs and quantities. Input\n'
+                        'values for these calculated fields are omitted from requests; prices on\n'
+                        'other line item kinds, such as simple, are preserved. For updates without\n'
+                        'line items, total fields and autocalculate are sent as supplied; MakeLeaps\n'
+                        'does not recalculate totals.\n\n'
+                        'The MakeLeaps API and makeleaps-client do not fill recipient_* fields\n'
+                        '(e.g. recipient_contact_name, recipient_postal_code) or sender_* fields\n'
+                        '(e.g. sender_contact_name, sender_postal_code) from client, client_contact,\n'
+                        'or your company information. When writing YAML from scratch, include these\n'
+                        'fields in the input. When reusing an existing document, its recipient and\n'
+                        'sender fields are copied to the new document.'
+                    )
+                if operation == 'update':
+                    write.add_argument('mid')
+                write.add_argument('--file', required=True, metavar='FILE', help='YAML input file, or - for stdin')
+                write.add_argument('--language', default=argparse.SUPPRESS)
+            delete = actions.add_parser('delete', help='Delete a document (requires --yes)')
+            delete.add_argument('mid')
+            delete.add_argument('--yes', action='store_true', help='Confirm document deletion')
+            delete.add_argument('--language', default=argparse.SUPPRESS)
         pdf = actions.add_parser('pdf', help='Save one PDF, or all matching PDFs with --dir')
         pdf.add_argument('mid', nargs='?')
         pdf.add_argument('--language', default=argparse.SUPPRESS)
@@ -117,11 +165,20 @@ async def _records(api, args):
 
 
 async def _execute(args, client_id, client_secret):
+    if getattr(args, 'operation', None) in ('create', 'update'):
+        data = _read_yaml(args.file)
     async with MakeLeapsClient(client_id, client_secret, language=args.language) as api:
         if args.resource == 'partner':
             return (await api.get_partner()).model_dump()
         if args.operation == 'get':
             return (await api.get_document(args.mid)).model_dump()
+        if args.operation == 'create':
+            return (await api.create_document(data)).model_dump()
+        if args.operation == 'update':
+            return (await api.update_document(args.mid, data)).model_dump()
+        if args.operation == 'delete':
+            await api.delete_document(args.mid)
+            return None
         if args.operation == 'list':
             empty = True
             records = _records(api, args)
@@ -175,6 +232,9 @@ async def _execute(args, client_id, client_secret):
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if getattr(args, 'operation', None) == 'delete' and not args.yes:
+        print('Document deletion requires --yes.', file=sys.stderr)
+        return 1
     if getattr(args, 'operation', None) == 'pdf':
         if args.mid and args.dir:
             parser.error('use either MID with --output, or --dir without MID')
@@ -199,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except OSError:
-        print('Unable to read or write the requested output file.', file=sys.stderr)
+        print('Unable to read or write the requested file.', file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('Interrupted.', file=sys.stderr)

@@ -1,7 +1,8 @@
-"""Async, read-only MakeLeaps client with bounded retries and pagination."""
+"""Async MakeLeaps reads and document creation, editing, and deletion."""
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import deque
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import date
@@ -12,7 +13,7 @@ from typing import Any, TypeVar
 from urllib.parse import quote, urljoin
 
 import httpx
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from .models import Contact, Client, Document, DocumentArchive, Partner, Resource
 
@@ -21,12 +22,25 @@ _TOKEN_URL = _ORIGIN + '/user/oauth2/token/'
 _PAGE_SIZE = 100
 _PAGE_CONCURRENCY = 8
 _ATTEMPTS = 4
+_UNCONFIRMED_CREATE = (
+    'The MakeLeaps API did not confirm the result; the document may have been created. '
+    'Check MakeLeaps before retrying.'
+)
+_DOCUMENT_WRITE_EXCLUDED = frozenset({
+    'mid', 'url', 'display_name', 'pdf_content_url', 'pdf_upload_url',
+    'pickup_links', 'modified', 'date_removed', 'date_converted',
+    'is_accepted', 'is_confirmed', 'is_converted', 'approval_status', 'integrations',
+})
+_DOCUMENT_CALCULATED_FIELDS = frozenset({
+    'subtotal', 'tax', 'total', 'mixed_tax_rate_totals', 'tax_group_totals',
+    'subtotal_sales_tax', 'subtotal_withholding_tax', 'jp_withholding_tax',
+})
 T = TypeVar('T', bound=Resource)
 Filters = Mapping[str, Any] | Sequence[tuple[str, Any]]
 
 
 class MakeLeapsError(Exception):
-    """A request or response failure, without credentials or raw server content."""
+    """A request or response failure with safe API validation details."""
 
 
 def _safe_url(value: str) -> httpx.URL:
@@ -97,6 +111,24 @@ def _retry_after(response: httpx.Response, attempt: int) -> float:
     return float(2 ** attempt)
 
 
+def _validation_details(value: Any, path: str = '') -> list[str] | None:
+    if isinstance(value, dict):
+        children = value.items()
+    elif isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            return [f'{path}: {"; ".join(value)}'] if value else []
+        children = enumerate(value)
+    else:
+        return None
+    details = []
+    for field, messages in children:
+        nested = _validation_details(messages, f'{path}.{field}' if path else str(field))
+        if nested is None:
+            return None
+        details.extend(nested)
+    return details
+
+
 class MakeLeapsClient:
     """Use credentials from arguments only; close with ``async with`` or ``aclose``.
 
@@ -110,6 +142,10 @@ class MakeLeapsClient:
         if not client_id or not client_secret:
             raise MakeLeapsError('Both client_id and client_secret are required.')
         self._credentials = httpx.BasicAuth(client_id, client_secret)
+        self._sensitive_values = {
+            client_id, client_secret,
+            base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode(),
+        }
         self._http = httpx.AsyncClient(
             headers={'Accept-Language': language, 'Accept': 'application/json'},
             transport=transport, follow_redirects=False, timeout=60.0,
@@ -132,14 +168,18 @@ class MakeLeapsClient:
         await self._http.aclose()
         self._token = None
         self._expires_at = 0.0
+        self._sensitive_values.clear()
 
     async def _send(self, method: str, url: str | httpx.URL, **kwargs) -> httpx.Response:
         url = _safe_url(str(url))
+        creating_document = method == 'POST' and str(url) != _TOKEN_URL
         for attempt in range(_ATTEMPTS):
             await self._limiter.acquire()
             try:
                 response = await self._http.request(method, url, **kwargs)
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
+                if creating_document and not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                    raise MakeLeapsError(_UNCONFIRMED_CREATE) from None
                 if attempt + 1 == _ATTEMPTS:
                     raise MakeLeapsError('Unable to communicate with the MakeLeaps API.') from None
                 await asyncio.sleep(2 ** attempt)
@@ -149,16 +189,33 @@ class MakeLeapsClient:
                     raise MakeLeapsError('The MakeLeaps API rate limit persisted after retries.')
                 self._limiter.defer(_retry_after(response, attempt))
                 continue
-            if response.status_code >= 500 and attempt + 1 < _ATTEMPTS:
-                await asyncio.sleep(2 ** attempt)
-                continue
+            if response.status_code >= 500:
+                if creating_document:
+                    raise MakeLeapsError(f'MakeLeaps API request failed (HTTP {response.status_code}). {_UNCONFIRMED_CREATE}')
+                if attempt + 1 < _ATTEMPTS:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
             return response
         raise MakeLeapsError('Unable to complete the MakeLeaps API request.')
 
-    @staticmethod
-    def _check(response: httpx.Response) -> None:
+    def _redact(self, message: str) -> str:
+        for secret in sorted(self._sensitive_values, key=len, reverse=True):
+            message = message.replace(secret, '[redacted]')
+        return message
+
+    def _check(self, response: httpx.Response) -> None:
         if not 200 <= response.status_code < 300:
-            raise MakeLeapsError(f'MakeLeaps API request failed (HTTP {response.status_code}).')
+            message = f'MakeLeaps API request failed (HTTP {response.status_code}).'
+            if 400 <= response.status_code < 500:
+                try:
+                    data = response.json()
+                except (ValueError, UnicodeError):
+                    data = None
+                errors = data.get('response') if isinstance(data, dict) else None
+                details = _validation_details(errors) if isinstance(errors, dict) else None
+                if details:
+                    message += ' ' + '; '.join(details)
+            raise MakeLeapsError(self._redact(message))
 
     @staticmethod
     def _json(response: httpx.Response) -> dict[str, Any]:
@@ -186,23 +243,26 @@ class MakeLeapsClient:
             except (KeyError, TypeError, ValueError):
                 raise MakeLeapsError('The MakeLeaps API returned an invalid access token response.') from None
             self._token = token
+            self._sensitive_values.add(token)
             self._expires_at = time.monotonic() + expires
             return token
 
-    async def _request(self, url: str | httpx.URL, *, params=None) -> httpx.Response:
+    async def _request(self, url: str | httpx.URL, *, params=None,
+                       method: str = 'GET', json=None) -> httpx.Response:
         url = _safe_url(str(url))
         token = await self._access_token()
-        response = await self._send('GET', url, params=params,
+        response = await self._send(method, url, params=params, json=json,
                                     headers={'Authorization': f'Bearer {token}'})
         if response.status_code == 401:
             token = await self._access_token(rejected=token)
-            response = await self._send('GET', url, params=params,
+            response = await self._send(method, url, params=params, json=json,
                                         headers={'Authorization': f'Bearer {token}'})
         self._check(response)
         return response
 
-    async def _data(self, url: str | httpx.URL, *, params=None) -> dict[str, Any]:
-        data = self._json(await self._request(url, params=params))
+    async def _data(self, url: str | httpx.URL, *, params=None,
+                    method: str = 'GET', json=None) -> dict[str, Any]:
+        data = self._json(await self._request(url, params=params, method=method, json=json))
         if 'response' not in data:
             raise MakeLeapsError('The MakeLeaps API response is missing its resource data.')
         return data
@@ -231,11 +291,13 @@ class MakeLeapsClient:
         """Return the company associated with the API key."""
         return self._model(Partner, (await self._data(await self._company()))['response'])
 
-    async def _resource(self, kind: str, mid: str) -> dict[str, Any]:
+    async def _resource_url(self, kind: str, mid: str) -> str:
         if not mid:
             raise MakeLeapsError('A resource mid is required.')
-        url = (await self._company()) + kind + '/' + quote(str(mid), safe='') + '/'
-        value = (await self._data(url))['response']
+        return (await self._company()) + kind + '/' + quote(str(mid), safe='') + '/'
+
+    async def _resource(self, kind: str, mid: str) -> dict[str, Any]:
+        value = (await self._data(await self._resource_url(kind, mid)))['response']
         if not isinstance(value, dict):
             raise MakeLeapsError('The MakeLeaps API returned an invalid resource.')
         return value
@@ -300,6 +362,8 @@ class MakeLeapsClient:
         return self._model(Document, value)
 
     async def _expand_references(self, value: dict[str, Any]) -> Document:
+        if not isinstance(value, dict):
+            raise MakeLeapsError('The MakeLeaps API returned an invalid resource.')
         async def collect(field):
             reference = value.get(field)
             if not isinstance(reference, str):
@@ -314,6 +378,56 @@ class MakeLeapsClient:
     async def get_document(self, mid: str) -> Document:
         """Return a document with its complete client and contact resources."""
         return await self._expand_references(await self._resource('document', mid))
+
+    @staticmethod
+    def _document_payload(data: Mapping[str, Any] | Document, *, creating: bool = False) -> dict[str, Any]:
+        if isinstance(data, Document):
+            data = data.model_dump()
+        value = {key: val for key, val in data.items() if key not in _DOCUMENT_WRITE_EXCLUDED}
+        if 'tax_rounding' in value:
+            value.pop('round_tax_down', None)
+        for field in ('client', 'client_contact'):
+            if isinstance(value.get(field), Mapping):
+                value[field] = value[field].get('url')
+        # YAML can contain date/datetime values; serialize without validating fields.
+        value = TypeAdapter(Any).dump_python(value, mode='json')
+        if creating or 'lineitems' in value:
+            value['autocalculate'] = True
+            for field in _DOCUMENT_CALCULATED_FIELDS:
+                value.pop(field, None)
+            if isinstance(value.get('lineitems'), list):
+                value['lineitems'] = [
+                    {key: val for key, val in item.items() if key != 'price'}
+                    if isinstance(item, Mapping) and item.get('kind') in ('normal', 'subtotal') else item
+                    for item in value['lineitems']
+                ]
+        return value
+
+    async def create_document(self, data: Mapping[str, Any] | Document) -> Document:
+        """Create a document and return its complete client and contact resources."""
+        payload = self._document_payload(data, creating=True)
+        value = (await self._data((await self._company()) + 'document/',
+                                  method='POST', json=payload))['response']
+        try:
+            return await self._expand_references(value)
+        except MakeLeapsError as exc:
+            if not isinstance(value, dict):
+                raise
+            mid = value.get('mid')
+            identifier = f' (mid: {mid})' if isinstance(mid, str) and mid else ''
+            message = f'The document{identifier} was created, but its expanded details could not be returned. {exc}'
+            raise MakeLeapsError(self._redact(message)) from None
+
+    async def update_document(self, mid: str, data: Mapping[str, Any] | Document) -> Document:
+        """Patch only supplied writable fields and return the expanded document."""
+        payload = self._document_payload(data)
+        value = (await self._data(await self._resource_url('document', mid),
+                                  method='PATCH', json=payload))['response']
+        return await self._expand_references(value)
+
+    async def delete_document(self, mid: str) -> None:
+        """Delete the document identified by its mid."""
+        await self._request(await self._resource_url('document', mid), method='DELETE')
 
     async def list_documents(self, *, document_type: str | None = None,
                              date_from: date | str | None = None,
