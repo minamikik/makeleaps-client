@@ -229,3 +229,22 @@ class DocumentArchive(Resource):
     total: Decimal | None = None
     external_id: str | None = None
     delivery_methods: list[str] | None = None
+
+
+class MarkSentResult(Resource):
+    """The saved document date and whether its Document Archive was created."""
+
+    mid: str
+    date_sent: dt.datetime
+    archive_created: bool
+    archive: DocumentArchive | None
+
+
+class SentStatus(Resource):
+    """A document's sent date and a matching archive of delivery outside MakeLeaps."""
+
+    mid: str | None
+    document_type: str | None
+    document_number: str | None
+    date_sent: dt.datetime | None
+    has_external_archive: bool

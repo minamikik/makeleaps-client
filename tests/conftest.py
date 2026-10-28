@@ -57,6 +57,10 @@ class Backend:
             if name in ('document', 'archive'):
                 value['pdf_content_url'] = f'{BASE}{name}/{tail[0]}/pdf/'
             return envelope(value)
+        if name == 'document' and set(request.url.params) == {'document_type', 'document_number', 'page_size', 'page'}:
+            # Existing write scenarios have no conflicting document numbers.
+            # Number-conflict tests supply their own list response via override.
+            return envelope([], count=0, page=1, next=None, prev=None)
         count = self.document_count if name == 'document' else self.archive_count if name == 'archive' else 1
         page = int(request.url.params.get('page', '1'))
         size = min(int(request.url.params.get('page_size', '20')), 100)
