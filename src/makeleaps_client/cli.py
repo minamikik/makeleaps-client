@@ -137,8 +137,10 @@ def _parser() -> argparse.ArgumentParser:
         if name == 'documents':
             convert = actions.add_parser('convert', help='Copy a document into a new number and any type, including the same type')
             convert.description = (
-                'Copy client, contact, recipient and sender fields, title, and line items '
+                'Copy client, contact, recipient and sender fields, and line items '
                 'into a new document; output the complete created document as YAML. '
+                'When the type changes, omit title so the API uses the new type\'s '
+                'default title. A same-type copy preserves the source title. '
                 'Without --template, keep the source template language, preferring the same '
                 'template code and then the same tax settings. If none matches the language, '
                 'specify --template. The issue date defaults to today in Japan. Status dates '

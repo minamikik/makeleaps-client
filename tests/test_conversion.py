@@ -86,7 +86,7 @@ def test_conversion_copies_content_and_returns_the_created_document_with_client_
     assert (sent['document_type'], sent['document_number'], sent['document_template'], sent['date']) == (
         target, 'EXAMPLE-NEW', 'example-shared', '2025-05-06',
     )
-    for key in ('title', 'project_name', 'note', 'currency', 'bank_details', 'message', 'tags',
+    for key in ('project_name', 'note', 'currency', 'bank_details', 'message', 'tags',
                 'purchase_order_ids', 'example_extra'):
         assert sent[key] == before[key]
     for key in before:
@@ -109,6 +109,33 @@ def test_conversion_copies_content_and_returns_the_created_document_with_client_
                 'mixed_tax_rate_totals', 'tax_group_totals'):
         assert key not in sent
     assert not any(r.method in ('PATCH', 'DELETE') for r in backend.requests)
+
+
+@pytest.mark.req('SP-MLC-069')
+@pytest.mark.parametrize('kind,target', [('quote', 'invoice'), ('invoice', 'deliveryslip')])
+def test_conversion_to_a_different_type_omits_the_source_title(backend, kind, target):
+    """種類を変えて書類を作る時は、元の title を送らず API の既定値に任せる。"""
+    conversion_backend(backend, kind=kind)
+    async def scenario():
+        async with client(backend) as api:
+            await api.convert_document('example-source', target, 'EXAMPLE-NEW')
+    asyncio.run(scenario())
+    [sent] = payloads(backend)
+    assert 'title' not in sent
+
+
+@pytest.mark.req('SP-MLC-064')
+@pytest.mark.req('SP-MLC-069')
+@pytest.mark.parametrize('kind', ['quote', 'invoice'])
+def test_duplicate_preserves_the_source_title(backend, kind):
+    """同じ種類の書類を複製する時は、元の title をそのまま送る。"""
+    source = conversion_backend(backend, kind=kind)
+    async def scenario():
+        async with client(backend) as api:
+            await api.convert_document('example-source', kind, 'EXAMPLE-COPY')
+    asyncio.run(scenario())
+    [sent] = payloads(backend)
+    assert sent['title'] == source['title']
 
 
 @pytest.mark.req('SP-MLC-062')
@@ -243,9 +270,10 @@ def test_conversion_sends_an_explicit_template_without_reading_template_lists(ba
 
 
 @pytest.mark.req('SP-MLC-062')
+@pytest.mark.req('SP-MLC-069')
 @pytest.mark.parametrize('options', [[], ['--template', 'example-explicit', '--date', '2025-05-06', '--language', 'en']])
 def test_cli_conversion_outputs_complete_created_yaml_and_passes_options(cli_transport, capsys, options):
-    """変換の command は新しい番号と種類と任意指定を使い、作成結果の全体を YAML で出す。"""
+    """変換の command は任意指定を使い、title を送らず、作成結果の全体を YAML で出す。"""
     conversion_backend(cli_transport)
     assert main(['documents', 'convert', 'example-source', '--type', 'invoice', '--number', 'EXAMPLE-CLI', *options]) == 0
     output = capsys.readouterr()
@@ -260,6 +288,7 @@ def test_cli_conversion_outputs_complete_created_yaml_and_passes_options(cli_tra
     assert value['lineitems']
     assert value['total'] == '1100'
     [sent] = payloads(cli_transport)
+    assert 'title' not in sent
     if options:
         assert sent['document_template'] == 'example-explicit'
         assert sent['date'] == '2025-05-06'
@@ -465,17 +494,19 @@ def test_invalid_or_unsupported_deadlines_fail_before_requests(backend, target, 
 
 
 @pytest.mark.req('SP-MLC-064')
+@pytest.mark.req('SP-MLC-069')
 @pytest.mark.parametrize('options,expected', [
     (['--deadline', '2025-06-01'], '2025-06-01'),
     (['--deadline-days', '14'], '2025-05-20'),
 ])
 def test_cli_duplicate_accepts_deadline_options(cli_transport, capsys, options, expected):
-    """複製の command は期限を日付または発行日からの日数で受ける。"""
-    conversion_backend(cli_transport)
+    """複製の command は期限の指定を受け、元の title をそのまま送る。"""
+    source = conversion_backend(cli_transport)
     assert main(['documents', 'convert', 'example-source', '--type', 'quote',
                  '--number', 'EXAMPLE-COPY', '--date', '2025-05-06', *options]) == 0
     assert yaml.safe_load(capsys.readouterr().out)['date_valid'] == expected
     assert payloads(cli_transport)[0]['date_valid'] == expected
+    assert payloads(cli_transport)[0]['title'] == source['title']
 
 
 @pytest.mark.req('SP-MLC-064')

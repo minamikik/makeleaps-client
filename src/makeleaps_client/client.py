@@ -659,6 +659,8 @@ class MakeLeapsClient:
         are not copied. Choose either an explicit deadline or days from the new
         issue date. Otherwise, preserve the original interval only when both
         types use the same deadline field. A same-type copy keeps its template.
+        A different type omits the title so the API uses its default; a
+        same-type copy preserves the source title.
         """
         issued = _document_date(date) if date is not None else datetime.now(_JAPAN).date()
         if deadline is not None and deadline_days is not None:
@@ -686,6 +688,8 @@ class MakeLeapsClient:
         if template is None:
             template = await self._conversion_template(source, document_type)
         payload = {key: value for key, value in source.items() if key not in _DOCUMENT_STATUS_DATES}
+        if document_type != source.get('document_type'):
+            payload.pop('title', None)
         for key in ('date_due', 'date_valid'):
             payload.pop(key, None)
         if due is not None:
